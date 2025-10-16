@@ -6,17 +6,21 @@
 set -euo pipefail
 
 # --- Configuration ---
-APPIMAGE_SOURCE="${1}"
+APPIMAGE_SOURCE="${1:-}"
 if [ -z "$APPIMAGE_SOURCE" ]; then
+    echo "ℹ️  No AppImage path provided, attempting auto-detection..."
     # Auto-detect the newest LM Studio AppImage in current directory
-    APPIMAGE_SOURCE=$(ls -t LM-Studio-*.AppImage 2>/dev/null | head -1)
+    APPIMAGE_SOURCE=$(ls -t LM-Studio-*.AppImage 2>/dev/null | head -1 || true)
     if [ -z "$APPIMAGE_SOURCE" ]; then
-        echo "❌ Error: No LM Studio AppImage found in current directory."
-        echo "Usage: $0 [path-to-appimage]"
-        echo "Or place LM-Studio-*.AppImage in current directory."
+        echo "❌ Error: No AppImage path provided and no LM Studio AppImage found in current directory."
+        echo ""
+        echo "Usage: $0 <path-to-appimage>"
+        echo "Example: $0 ~/Downloads/LM-Studio-0.2.9.AppImage"
+        echo ""
+        echo "Alternatively, place LM-Studio-*.AppImage in the current directory and run without arguments."
         exit 1
     fi
-    echo "Auto-detected: $APPIMAGE_SOURCE"
+    echo "✅ Auto-detected: $APPIMAGE_SOURCE"
 fi
 APPIMAGE_NAME=$(basename "$APPIMAGE_SOURCE")
 INSTALL_DIR="$HOME/Applications"
@@ -28,6 +32,31 @@ SYSTEM_HICOLOR_INDEX="/usr/share/icons/hicolor/index.theme"
 
 echo "This script will need sudo for system changes."
 sudo -v   # ask for password up-front
+
+# Check for libfuse2 dependency
+echo "Checking for required dependencies..."
+if ! dpkg -l | grep -q "^ii  libfuse2"; then
+    echo "⚠️  Warning: libfuse2 is not installed. AppImages require FUSE to run."
+    echo ""
+    read -p "Would you like to install libfuse2 now? (y/n): " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Installing libfuse2..."
+        sudo apt-get update && sudo apt-get install -y libfuse2
+        if [ $? -eq 0 ]; then
+            echo "✅ libfuse2 installed successfully"
+        else
+            echo "❌ Failed to install libfuse2. You may need to install it manually."
+            echo "Run: sudo apt-get install libfuse2"
+            exit 1
+        fi
+    else
+        echo "⚠️  Continuing without libfuse2. The AppImage may not run until you install it."
+        echo "To install later, run: sudo apt-get install libfuse2"
+    fi
+else
+    echo "✅ libfuse2 is installed"
+fi
 
 # 1. Move AppImage
 mkdir -p "$INSTALL_DIR"
@@ -72,8 +101,12 @@ if [ ! -f "$LOCAL_HICOLOR/index.theme" ]; then
 fi
 
 # 6. Create a stable symlink
-echo "[6/7] Creating symlink $SYMLINK"
-sudo ln -sf "$APPIMAGE_PATH" "$SYMLINK"
+echo "[6/7] Creating wrapper script at $SYMLINK"
+sudo tee "$SYMLINK" > /dev/null <<WRAPPER
+#!/bin/bash
+exec "$APPIMAGE_PATH" --no-sandbox "\$@"
+WRAPPER
+sudo chmod +x "$SYMLINK"
 
 # 7. Write desktop entry
 mkdir -p "$DESKTOP_DIR"
@@ -83,7 +116,7 @@ cat > "$DESKTOP_DIR/lm-studio.desktop" <<EOF
 Type=Application
 Name=LM Studio
 Comment=Lightweight LLM development GUI
-Exec=$SYMLINK %U
+Exec=$SYMLINK --no-sandbox %U
 Icon=lm-studio
 Categories=Development;IDE;
 Terminal=false
